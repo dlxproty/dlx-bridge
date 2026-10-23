@@ -1,0 +1,355 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+#  DLX PRO Turbo — پل ابری (Cloud Bridge)
+#  ─ سرور دانلود رایگان روی GitHub Actions برای سایت‌های فیلترشده (یوتیوب و ...) ─
+#
+#  ▸ سه راه ثبت سفارش:
+#     ۱) دستی از سایت گیت‌هاب ..... تب Actions ▸ Run workflow ▸ لینک را بده
+#     ۲) برنامه/سرویس (با توکن) .. رخداد repository_dispatch از نوع dlx-bridge
+#     ۳) کاربر نهایی (بدون توکن) . ساخت Issue با عنوان:   dlx: <لینک ویدیو>
+#        (در بدنه‌ی ایشو می‌توان نوشت:  quality: 1080  یا  quality: audio)
+#
+#  ▸ خروجی: فایل‌ها + meta.json (شناسنامه) + cover.img (کاور) در Releases با تگ dlx-<jid>
+#  ▸ نگهداری: رلیزهای قدیمی‌تر از ۱۲ ساعت، خودکار حذف می‌شوند (هر ۳ ساعت یک‌بار)
+#  ▸ نکته: ریپو باید Public باشد تا دقیقه‌ها رایگان و دانلود بدون توکن باشد.
+#
+#  ⚙️ تنظیمات دلخواه در بخش env پایین (MAX_GB / MAX_MINUTES / KEEP_HOURS)
+# ═══════════════════════════════════════════════════════════════════════════════
+name: DLX Cloud Bridge
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'لینک ویدیو (یوتیوب، اینستاگرام، تیک‌تاک، آپارات و ...)'
+        required: true
+      quality:
+        description: 'کیفیت: best | 2160 | 1440 | 1080 | 720 | 480 | 360 | audio'
+        required: false
+        default: 'best'
+      jid:
+        description: 'شناسه سفارش — خالی بگذارید تا خودکار باشد'
+        required: false
+        default: ''
+      clean:
+        description: 'فقط پاک‌سازی رلیزهای قدیمی؟ (true/false)'
+        required: false
+        default: 'false'
+  repository_dispatch:
+    types: [dlx-bridge]
+  issues:
+    types: [opened]
+  schedule:
+    - cron: '17 */3 * * *'   # هر ۳ ساعت یک‌بار پاک‌سازی
+
+# دسترسی‌های لازم: ساخت رلیز (contents) و کامنت/بستن ایشو (issues)
+permissions:
+  contents: write
+  issues: write
+
+# ─────────── تنظیمات (مقادیر را مطابق نیازتان تغییر دهید) ───────────
+env:
+  MAX_GB: '4'        # حداکثر حجم کل هر سفارش (گیگابایت)
+  MAX_MINUTES: '180' # حداکثر مدت ویدیو (دقیقه)
+  KEEP_HOURS: '12'   # عمر رلیز تا حذف خودکار (ساعت)
+
+jobs:
+  # ═════════════════════════════════════════════════
+  #  جاب اصلی: اعتبارسنجی ← بررسی ← دانلود ← رلیز
+  # ═════════════════════════════════════════════════
+  bridge:
+    name: 'دریافت و انتشار'
+    if: github.event_name != 'schedule' && !(github.event_name == 'workflow_dispatch' && inputs.clean == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      # ─── ۱) عادی‌سازی و اعتبارسنجی ورودی از هر سه مسیر ───
+      - name: '۱. آماده‌سازی و اعتبارسنجی درخواست'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVT: ${{ github.event_name }}
+          D_URL: ${{ inputs.url }}
+          D_JID: ${{ inputs.jid }}
+          D_Q: ${{ inputs.quality }}
+          P_URL: ${{ github.event.client_payload.url }}
+          P_JID: ${{ github.event.client_payload.jid }}
+          P_Q: ${{ github.event.client_payload.quality }}
+          I_TITLE: ${{ github.event.issue.title }}
+          I_BODY: ${{ github.event.issue.body }}
+          I_NUM: ${{ github.event.issue.number }}
+          I_LOGIN: ${{ github.event.issue.user.login }}
+          RUN_NUM: ${{ github.run_number }}
+          ALLOWED: ${{ vars.ALLOWED_LOGINS }}
+        run: |
+          set -euo pipefail
+
+          # — برداشتن پارامترها از مسیر ورود —
+          Q="best"
+          case "$EVT" in
+            workflow_dispatch)
+              URL="$D_URL"; JID="$D_JID"; Q="${D_Q:-best}" ;;
+            repository_dispatch)
+              URL="$P_URL"; JID="$P_JID"; Q="${P_Q:-best}" ;;
+            issues)
+              URL="$(printf '%s\n%s\n' "$I_TITLE" "$I_BODY" \
+                | grep -oE 'https?://[^[:space:]"<>]+' | head -n1 \
+                | sed 's/[.,;:)\]}]+$//' || true)"
+              JID="i${I_NUM}"
+              Q="$(printf '%s' "$I_BODY" \
+                | grep -oiE '(quality|کیفیت)[[:space:]]*[:=][[:space:]]*(best|audio|2160|1440|1080|720|480|360)' \
+                | grep -oE '(best|audio|2160|1440|1080|720|480|360)$' | head -n1 || true)"
+              ;;
+          esac
+          [ -n "$JID" ] || JID="r${RUN_NUM}"
+          JID="$(printf '%s' "$JID" | tr -cd 'a-zA-Z0-9-' | cut -c1-24)"
+          [ -n "$JID" ] || JID="r${RUN_NUM}"
+          case "$Q" in best|audio|2160|1440|1080|720|480|360) ;; *) Q="best" ;; esac
+
+          # — (اختیاری) اگر متغیر ALLOWED_LOGINS تنظیم شده باشد فقط همین حساب‌ها مجازند —
+          if [ "$EVT" = "issues" ] && [ -n "${ALLOWED:-}" ]; then
+            ALLOWED="$(printf '%s' "$ALLOWED" | tr -d ' ')"
+            case ",$ALLOWED," in
+              *",$I_LOGIN,"*) ;;
+              *)
+                gh issue close "$I_NUM" --repo "$REPO" --comment "⛔ حساب شما در فهرست مجاز پل ابری نیست."
+                echo "::error::سفارش از حساب غیرمجاز رد شد: $I_LOGIN"
+                exit 1 ;;
+            esac
+          fi
+
+          # — اعتبارسنجی لینک (فهرست سرویس‌های مجاز) —
+          ERR=""
+          if [ -z "$URL" ]; then
+            ERR="هیچ لینکی در درخواست پیدا نشد. راهنما: Issue با عنوان «dlx: <لینک ویدیو>» بسازید یا از Actions ▸ Run workflow استفاده کنید."
+          elif ! printf '%s' "$URL" | grep -qiE '^https?://([a-z0-9-]+\.)*(youtube\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com|x\.com|twitter\.com|facebook\.com|fb\.watch|pinterest\.com|pin\.it|aparat\.com|soundcloud\.com|vimeo\.com|dailymotion\.com|twitch\.tv|reddit\.com|rumble\.com|vk\.com|ok\.ru|mixcloud\.com|bandcamp\.com|spotify\.com|snapchat\.com|linkedin\.com)(/|$)'; then
+            ERR="این سرویس پشتیبانی نمی‌شود: $URL"
+          fi
+          if [ -n "$ERR" ]; then
+            if [ "$EVT" = "issues" ] && [ -n "${I_NUM:-}" ]; then
+              gh issue close "$I_NUM" --repo "$REPO" --comment "⛔ $ERR" || true
+            fi
+            echo "::error::$ERR"
+            exit 1
+          fi
+
+          echo "سفارش: jid=$JID | quality=$Q | url=$URL"
+          echo "BRIDGE_URL=$URL" >> "$GITHUB_ENV"
+          echo "JID=$JID"        >> "$GITHUB_ENV"
+          echo "QUALITY=$Q"      >> "$GITHUB_ENV"
+
+      # ─── ۲) تایید دریافت در ایشو (فقط مسیر Issue) ───
+      - name: '۲. تایید ثبت سفارش'
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          JID: ${{ env.JID }}
+          I_NUM: ${{ github.event.issue.number }}
+        run: gh issue comment "$I_NUM" --repo "$REPO" --body "🚀 سفارش **dlx-$JID** ثبت شد و در صف اجراست؛ معمولاً ۲ تا ۵ دقیقه طول می‌کشد. همین‌جا خبر می‌گذارم."
+
+      # ─── ۳) نصب yt-dlp (آخرین نسخه پایدار) + بررسی ffmpeg ───
+      - name: '۳. نصب yt-dlp'
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+          ffmpeg -version 2>/dev/null | head -n1 || echo '(ffmpeg پیش‌فرض رانر)'
+
+      # ─── ۴) کوکی اختیاری یوتیوب (عبور از دیوار «تأیید ربات») ───
+      - name: '۴. آماده‌سازی کوکی (در صورت تنظیم YT_COOKIES)'
+        env:
+          COOKIE_B64: ${{ secrets.YT_COOKIES }}
+        run: |
+          set -euo pipefail
+          if [ -n "$COOKIE_B64" ]; then
+            printf '%s' "$COOKIE_B64" | base64 -d > "$HOME/cookies.txt"
+            chmod 600 "$HOME/cookies.txt"
+            echo "YTDLP_COOKIES=--cookies $HOME/cookies.txt" >> "$GITHUB_ENV"
+            echo "کوکی بارگذاری شد."
+          else
+            echo "YTDLP_COOKIES=" >> "$GITHUB_ENV"
+            echo "کوکی تنظیم نشده — بدون کوکی ادامه می‌دهیم."
+          fi
+
+      # ─── ۵) بررسی ← دانلود ← پارت‌بندی ← ساخت رلیز ───
+      - name: '۵. بررسی، دریافت و انتشار'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVT: ${{ github.event_name }}
+          I_NUM: ${{ github.event.issue.number }}
+          URL: ${{ env.BRIDGE_URL }}
+          JID: ${{ env.JID }}
+          QUALITY: ${{ env.QUALITY }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            echo "::error::$1"
+            if [ "$EVT" = "issues" ] && [ -n "${I_NUM:-}" ]; then
+              gh issue close "$I_NUM" --repo "$REPO" --comment "⛔ $1" || true
+            fi
+            exit 1
+          }
+
+          # ترجمه‌ی خطای yt-dlp به پیام فارسی خوانا
+          mapfa() {
+            local s; s="$(cat /tmp/dlp.err 2>/dev/null || true)"
+            case "$s" in
+              *"Sign in to confirm"*|*"not a bot"*|*"prove you're not a bot"*)
+                echo "یوتیوب برای این سرور دیوار «تأیید ربات» گذاشته — Secret کوکی (YT_COOKIES) را طبق README تنظیم کنید" ;;
+              *"Private video"*|*"members-only"*|*"Join this channel"*)
+                echo "این محتوا خصوصی است یا مخصوص اعضای کانال است" ;;
+              *"confirm your age"*|*"age-restricted"*|*"inappropriate"*)
+                echo "این محتوا محدودیت سنی دارد و بدون کوکی حساب بزرگسال قابل دریافت نیست" ;;
+              *"live event"*|*"is live"*|*"live stream"*)
+                echo "پخش زنده پشتیبانی نمی‌شود — بعد از اتمام پخش دوباره امتحان کنید" ;;
+              *"Unsupported URL"*)
+                echo "این آدرس توسط yt-dlp پشتیبانی نمی‌شود" ;;
+              *"unavailable"*|*"removed"*|*"404"*|*"Not Found"*)
+                echo "ویدیو حذف شده یا در دسترس نیست" ;;
+              *"geo"*|*"country"*)
+                echo "این محتوا برای این منطقه در دسترس نیست" ;;
+              *)
+                echo "خطا در دریافت: $(printf '%s' "$s" | tail -n 3 | tr '\n' ' ' | head -c 400)" ;;
+            esac
+          }
+
+          # ── الف) بررسی اطلاعات با زنجیره‌ی کلاینت (عبور از دیوار ربات) ──
+          PROBE=""; EA=""
+          for TRY in "" "--extractor-args youtube:player_client=tv" "--extractor-args youtube:player_client=web_safari,web_embedded"; do
+            echo "── بررسی اطلاعات با ${TRY:-کلاینت پیش‌فرض yt-dlp}"
+            if PROBE="$(yt-dlp -J --no-playlist --no-warnings --socket-timeout 20 \
+                        ${YTDLP_COOKIES:+$YTDLP_COOKIES} $TRY -- "$URL" 2>/tmp/dlp.err)"; then
+              EA="$TRY"; break
+            fi
+            PROBE=""
+          done
+          [ -n "$PROBE" ] || fail "$(mapfa)"
+
+          TITLE="$(jq -r '.title // "بدون عنوان"' <<<"$PROBE")"
+          UPLOADER="$(jq -r '.uploader // .channel // ""' <<<"$PROBE")"
+          DUR="$(jq -r '.duration // 0' <<<"$PROBE")"
+          THUMB="$(jq -r '.thumbnail // ((.thumbnails // []) | last | .url // "")' <<<"$PROBE")"
+          if [ "$(jq -r '.is_live // false' <<<"$PROBE")" = "true" ]; then fail "پخش زنده پشتیبانی نمی‌شود"; fi
+          if [ "$DUR" -gt 0 ] && [ $(( DUR / 60 )) -gt "${MAX_MINUTES:-180}" ]; then
+            fail "مدت ویدیو (حدود $(( DUR / 60 )) دقیقه) از سقف ${MAX_MINUTES} دقیقه بیشتر است"
+          fi
+
+          # ── ب) انتخاب فرمت بر اساس کیفیت ──
+          case "$QUALITY" in
+            audio) FMT="-f ba/b -x --audio-format mp3 --audio-quality 0 --embed-metadata --embed-thumbnail" ;;
+            best)  FMT="-f bv*+ba/b" ;;
+            *)     FMT="-f bv*[height<=${QUALITY}]+ba/b[height<=${QUALITY}]" ;;
+          esac
+
+          # ── ج) دانلود (اول با کلاینتِ موفقِ مرحله‌ی بررسی، بعد بقیه‌ی مسیرها) ──
+          mkdir -p out
+          OK=""; SEEN="|"
+          for TRY in "$EA" "" "--extractor-args youtube:player_client=tv" "--extractor-args youtube:player_client=web_safari,web_embedded"; do
+            case "$SEEN" in *"|$TRY|"*) continue ;; esac
+            SEEN="$SEEN$TRY|"
+            echo "── دانلود با ${TRY:-کلاینت پیش‌فرض yt-dlp}"
+            if yt-dlp --no-playlist --no-warnings --no-mtime --no-progress --restrict-filenames \
+                 --concurrent-fragments 5 --retries 10 --fragment-retries 10 --socket-timeout 20 \
+                 --max-filesize "${MAX_GB}G" --merge-output-format mp4 $FMT \
+                 ${YTDLP_COOKIES:+$YTDLP_COOKIES} $TRY \
+                 -o 'out/%(title).80s-%(id)s.%(ext)s' -- "$URL" 2>/tmp/dlp.err; then
+              OK=1; break
+            fi
+          done
+          [ -n "$OK" ] || fail "$(mapfa)"
+
+          # ── د) کنترل حجم و پارت‌بندی خودکار فایل‌های بزرگ (سقف هر فایل رلیز ≈ 2GiB) ──
+          if [ "$(find out -maxdepth 1 -type f | wc -l)" -eq 0 ]; then
+            fail "فایلی دانلود نشد — محتوا در دسترس نیست یا حجم آن از سقف بیشتر بود"
+          fi
+          TOTAL="$(du -sb out | cut -f1)"
+          MAXB=$(( MAX_GB * 1000000000 ))
+          if [ "$TOTAL" -gt "$MAXB" ]; then
+            fail "حجم کل دانلود از سقف ${MAX_GB} گیگابایت بیشتر است"
+          fi
+          find out -maxdepth 1 -type f -size +1900M | while read -r BIG; do
+            echo "── پارت‌بندی $(basename "$BIG") (سقف هر فایل رلیز گیت‌هاب ≈ 2GiB است)"
+            split -b 1900M -d "$BIG" "${BIG}.part" && rm -f "$BIG"
+          done
+
+          # ── هـ) کاور و شناسنامه (meta.json) ──
+          if [ -n "$THUMB" ]; then
+            curl -fsSL --max-time 30 \
+                 -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36' \
+                 -e 'https://www.youtube.com/' -o out/cover.img "$THUMB" \
+              || echo '(کاور دریافت نشد — بدون کاور ادامه می‌دهیم)'
+          fi
+          find out -maxdepth 1 -type f -printf '%f\t%s\n' | sort \
+            | jq -Rsc 'split("\n")[:-1] | map(split("\t")) | map({name:.[0], bytes:(.[1]|tonumber)})' > /tmp/files.json
+          jq -n --arg jid "$JID" --arg url "$URL" --arg title "$TITLE" --arg uploader "$UPLOADER" \
+                --arg duration "$DUR" --arg quality "$QUALITY" --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                --slurpfile files /tmp/files.json \
+                '{schema:"dlx-bridge/1", jid:$jid, url:$url, title:$title, uploader:$uploader,
+                  duration:($duration|tonumber), quality:$quality, created:$created, files:$files[0]}' \
+            > out/meta.json
+
+          # ── و) ساخت رلیز (پیش‌نمایش — تا «Latest» ریپو شلوغ نشود) ──
+          TAG="dlx-$JID"
+          NOTES="🔗 منبع: $URL
+          📦 کیفیت: $QUALITY | فایل‌ها: $(jq '.files | length' out/meta.json) | حجم کل: $(du -sh out | cut -f1)
+          ⏳ تا ${KEEP_HOURS} ساعت آینده در دسترس؛ بعدش خودکار حذف می‌شود."
+          gh release create "$TAG" out/* --repo "$REPO" --prerelease \
+            --title "dlx-$JID — ${TITLE:0:70}" --notes "$NOTES" \
+            || fail "ساخت رلیز ناموفق بود (شاید تگ $TAG از قبل وجود دارد — jid تازه بدهید)"
+
+          # ── ز) خبر به ایشو + خلاصه‌ی اجرا ──
+          if [ "$EVT" = "issues" ] && [ -n "${I_NUM:-}" ]; then
+            gh issue comment "$I_NUM" --repo "$REPO" --body "✅ آماده شد!
+            فایل‌ها: https://github.com/$REPO/releases/tag/$TAG
+            (تا ${KEEP_HOURS} ساعت آینده در دسترس است.)" || true
+            gh issue close "$I_NUM" --repo "$REPO" || true
+          fi
+          {
+            echo "## پل ابری — dlx-$JID"
+            echo "- عنوان: $TITLE"
+            echo "- منبع: $URL"
+            echo "- رلیز: https://github.com/$REPO/releases/tag/$TAG"
+            echo "- فایل‌ها:"
+            jq -r '.files[].name' out/meta.json | sed 's/^/  - /'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ═════════════════════════════════════════════════
+  #  جاب نگهداری: حذف رلیزهای قدیمی + بستن ایشوهای رهاشده
+  # ═════════════════════════════════════════════════
+  cleanup:
+    name: 'پاک‌سازی خودکار'
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.clean == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 'حذف رلیزهای قدیمی‌تر از سقف نگهداری'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          CUTOFF="$(date -u -d "${KEEP_HOURS:-12} hours ago" +%Y-%m-%dT%H:%M:%SZ)"
+          echo "سقف نگهداری رلیزها: $CUTOFF"
+          TAGS="$(gh api --paginate "repos/$REPO/releases" \
+            | jq -rs --arg c "$CUTOFF" '[.[][] | select(.tag_name | startswith("dlx-")) | select(.created_at < $c) | .tag_name]')"
+          echo "رلیزهای آماده‌ی حذف: $TAGS"
+          for TAG in $(printf '%s' "$TAGS" | jq -r '.[]'); do
+            echo "→ حذف $TAG"
+            gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag || true
+          done
+
+      - name: 'بستن ایشوهای رهاشده (بیش از ۲۴ ساعت)'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          CUTOFF="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          gh issue list --repo "$REPO" --state open --limit 200 --json number,createdAt \
+            --jq ".[] | select(.createdAt < \"$CUTOFF\") | .number" \
+            | while read -r N; do
+                echo "→ بستن ایشو #$N"
+                gh issue close "$N" --repo "$REPO" --comment "🧹 این سفارش قدیمی به‌صورت خودکار بسته شد. اگر هنوز فایل لازم دارید، Issue تازه‌ای با عنوان «dlx: <لینک>» بسازید." || true
+              done
