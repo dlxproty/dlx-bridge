@@ -1,5 +1,6 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DLX PRO Turbo — پل ابری (Cloud Bridge)
+#  DLX-WF-VERSION: 2
 #  ─ سرور دانلود رایگان روی GitHub Actions برای سایت‌های فیلترشده (یوتیوب و ...) ─
 #
 #  ▸ سه راه ثبت سفارش:
@@ -9,10 +10,10 @@
 #        (در بدنه‌ی ایشو می‌توان نوشت:  quality: 1080  یا  quality: audio)
 #
 #  ▸ خروجی: فایل‌ها + meta.json (شناسنامه) + cover.img (کاور) در Releases با تگ dlx-<jid>
-#  ▸ نگهداری: رلیزهای قدیمی‌تر از ۱۲ ساعت، خودکار حذف می‌شوند (هر ۳ ساعت یک‌بار)
+#  ▸ نگهداری: رلیزهای قدیمی‌تر از ۱ ساعت حذف می‌شوند (زمان‌بندی هر ۱۵ دقیقه + در شروع هر سفارش جدید + از سمت برنامه)
 #  ▸ نکته: ریپو باید Public باشد تا دقیقه‌ها رایگان و دانلود بدون توکن باشد.
 #
-#  ⚙️ تنظیمات دلخواه در بخش env پایین (MAX_GB / MAX_MINUTES / KEEP_HOURS)
+#  ⚙️ تنظیمات دلخواه در بخش env پایین (MAX_GB / MAX_MINUTES / KEEP_MINUTES)
 # ═══════════════════════════════════════════════════════════════════════════════
 name: DLX Cloud Bridge
 
@@ -23,7 +24,7 @@ on:
         description: 'لینک ویدیو (یوتیوب، اینستاگرام، تیک‌تاک، آپارات و ...)'
         required: true
       quality:
-        description: 'کیفیت: best | 2160 | 1440 | 1080 | 720 | 480 | 360 | audio'
+        description: 'کیفیت: best | 2160 | 1440 | 1080 | 720 | 480 | 360 | 240 | audio'
         required: false
         default: 'best'
       jid:
@@ -39,7 +40,7 @@ on:
   issues:
     types: [opened]
   schedule:
-    - cron: '17 */3 * * *'   # هر ۳ ساعت یک‌بار پاک‌سازی
+    - cron: '*/15 * * * *'   # هر ۱۵ دقیقه پاک‌سازی (گیت‌هاب ممکن است چند دقیقه تأخیر بدهد)
 
 # دسترسی‌های لازم: ساخت رلیز (contents) و کامنت/بستن ایشو (issues)
 permissions:
@@ -50,7 +51,7 @@ permissions:
 env:
   MAX_GB: '4'        # حداکثر حجم کل هر سفارش (گیگابایت)
   MAX_MINUTES: '180' # حداکثر مدت ویدیو (دقیقه)
-  KEEP_HOURS: '12'   # عمر رلیز تا حذف خودکار (ساعت)
+  KEEP_MINUTES: '60' # عمر رلیز تا حذف خودکار (دقیقه)
 
 jobs:
   # ═════════════════════════════════════════════════
@@ -96,15 +97,15 @@ jobs:
                 | sed -E 's/[],.;:)}>]+$//' || true)"
               JID="i${I_NUM}"
               Q="$(printf '%s' "$I_BODY" \
-                | grep -oiE '(quality|کیفیت)[[:space:]]*[:=][[:space:]]*(best|audio|2160|1440|1080|720|480|360)' \
-                | grep -oiE '(best|audio|2160|1440|1080|720|480|360)$' | head -n1 || true)"
+                | grep -oiE '(quality|کیفیت)[[:space:]]*[:=][[:space:]]*(best|audio|2160|1440|1080|720|480|360|240)' \
+                | grep -oiE '(best|audio|2160|1440|1080|720|480|360|240)$' | head -n1 || true)"
               ;;
           esac
           [ -n "$JID" ] || JID="r${RUN_NUM}"
           JID="$(printf '%s' "$JID" | tr -cd 'a-zA-Z0-9-' | cut -c1-24)"
           [ -n "$JID" ] || JID="r${RUN_NUM}"
           Q="$(printf '%s' "${Q:-best}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-          case "$Q" in best|audio|2160|1440|1080|720|480|360) ;; *) Q="best" ;; esac
+          case "$Q" in best|audio|2160|1440|1080|720|480|360|240) ;; *) Q="best" ;; esac
 
           # — (اختیاری) اگر متغیر ALLOWED_LOGINS تنظیم شده باشد فقط همین حساب‌ها مجازند —
           if [ "$EVT" = "issues" ] && [ -n "${ALLOWED:-}" ]; then
@@ -125,8 +126,15 @@ jobs:
             ERR="هیچ لینکی در درخواست پیدا نشد. راهنما: Issue با عنوان «dlx: <لینک ویدیو>» بسازید یا از Actions ▸ Run workflow استفاده کنید."
           elif [[ "$URL" == *[[:space:][:cntrl:]]* ]]; then
             ERR="لینک نباید شامل فاصله یا خط جدید باشد"
-          elif ! printf '%s' "$URL" | grep -qiE '^https?://([a-z0-9-]+\.)*(youtube\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|vt\.tiktok\.com|vm\.tiktok\.com|x\.com|twitter\.com|facebook\.com|fb\.watch|pinterest\.com|pin\.it|aparat\.com|soundcloud\.com|vimeo\.com|dailymotion\.com|twitch\.tv|reddit\.com|rumble\.com|vk\.com|ok\.ru|mixcloud\.com|bandcamp\.com|spotify\.com|snapchat\.com|linkedin\.com)(/|$)'; then
-            ERR="این سرویس پشتیبانی نمی‌شود: $URL"
+          elif ! printf '%s' "$URL" | grep -qiE '^https?://[^/?#@[:space:]]'; then
+            ERR="لینک معتبر نیست: $URL"
+          elif printf '%s' "$URL" | sed -E 's#^https?://([^/?\#]*@)?([^/?\#:]*).*#\2#' \
+                 | grep -qiE '^(localhost|.*\.local|.*\.internal|metadata.*|127\.|10\.|0\.|169\.254\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'; then
+            ERR="آدرس‌های داخلی/محلی مجاز نیستند"
+          # مسیر Issue (بدون توکن، برای همه‌ی کاربران گیت‌هاب) فقط سرویس‌های شناخته‌شده؛
+          # سفارش از برنامه (توکن) و Run workflow (دسترسی نوشتن) برای هر سایتی آزاد است.
+          elif [ "$EVT" = "issues" ] && ! printf '%s' "$URL" | grep -qiE '^https?://([a-z0-9-]+\.)*(youtube\.com|youtube-nocookie\.com|youtu\.be|instagram\.com|instagr\.am|tiktok\.com|douyin\.com|x\.com|twitter\.com|facebook\.com|fb\.watch|pinterest\.[a-z.]+|pin\.it|aparat\.com|soundcloud\.com|vimeo\.com|dailymotion\.com|dai\.ly|twitch\.tv|reddit\.com|redd\.it|rumble\.com|vk\.com|ok\.ru|mixcloud\.com|bandcamp\.com|snapchat\.com|linkedin\.com|threads\.net|bsky\.app|bilibili\.com|b23\.tv|streamable\.com|imgur\.com|tumblr\.com|odysee\.com|kick\.com|ted\.com)(/|$)'; then
+            ERR="این سرویس برای ثبت سفارش از طریق Issue مجاز نیست (از داخل برنامه برای هر سایتی می‌توانید سفارش بدهید): $URL"
           fi
           if [ -n "$ERR" ]; then
             if [ "$EVT" = "issues" ] && [ -n "${I_NUM:-}" ]; then
@@ -151,13 +159,37 @@ jobs:
           I_NUM: ${{ github.event.issue.number }}
         run: gh issue comment "$I_NUM" --repo "$REPO" --body "🚀 سفارش **dlx-$JID** ثبت شد و در صف اجراست؛ معمولاً ۲ تا ۵ دقیقه طول می‌کشد. همین‌جا خبر می‌گذارم."
 
+      # ─── ۲.۵) پاک‌سازی رلیزهای منقضی — با هر سفارش جدید (اگر زمان‌بندی گیت‌هاب دیر اجرا شود) ───
+      - name: 'پاک‌سازی رلیزهای منقضی'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          CUTOFF="$(date -u -d "${KEEP_MINUTES:-60} minutes ago" +%Y-%m-%dT%H:%M:%SZ)"
+          gh api --paginate "repos/$REPO/releases" \
+            | jq -rs --arg c "$CUTOFF" '.[][] | select(.tag_name | startswith("dlx-")) | select((.published_at // .created_at) < $c) | .tag_name' \
+            | while read -r TAG; do
+                echo "→ حذف $TAG"
+                gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag || true
+              done
+
       # ─── ۳) نصب yt-dlp (آخرین نسخه پایدار) + بررسی ffmpeg ───
       - name: '۳. نصب yt-dlp'
         run: |
           sudo curl -fsSL -o /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
           yt-dlp --version
-          ffmpeg -version 2>/dev/null | head -n1 || echo '(ffmpeg پیش‌فرض رانر)'
+          # FIX (v5.3): رانرهای گیت‌هاب دیگر ffmpeg ندارند → بدون آن، ویدیو و صدا جدا-جدا رها می‌شدند.
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            echo "ffmpeg نیست — بیلد استاتیک نصب می‌شود..."
+            curl -fsSL -o /tmp/ff.tar.xz https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz
+            sudo tar -xJf /tmp/ff.tar.xz -C /opt
+            sudo ln -sf /opt/ffmpeg-master-latest-linux64-gpl/bin/ffmpeg /usr/local/bin/ffmpeg
+            sudo ln -sf /opt/ffmpeg-master-latest-linux64-gpl/bin/ffprobe /usr/local/bin/ffprobe
+            rm -f /tmp/ff.tar.xz
+          fi
+          ffmpeg -version | head -n1
 
       # ─── ۴) کوکی اختیاری یوتیوب (عبور از دیوار «تأیید ربات») ───
       - name: '۴. آماده‌سازی کوکی (در صورت تنظیم YT_COOKIES)'
@@ -255,7 +287,7 @@ jobs:
           case "$QUALITY" in
             audio) FMT=(-f "ba/b" -x --audio-format mp3 --audio-quality 0 --embed-metadata --embed-thumbnail) ;;
             best)  FMT=(-f "bv*+ba/b") ;;
-            *)     FMT=(-f "bv*[height<=${QUALITY}]+ba/b[height<=${QUALITY}]") ;;
+            *)     FMT=(-f "bv*[height<=${QUALITY}]+ba/b[height<=${QUALITY}]/bv*+ba/b") ;;
           esac
 
           # ── ج) دانلود (اول با کلاینتِ موفقِ مرحله‌ی بررسی، بعد بقیه‌ی مسیرها) ──
@@ -290,11 +322,18 @@ jobs:
           done
 
           # ── هـ) کاور و شناسنامه (meta.json) ──
+          ORIGIN="$(printf '%s' "$URL" | sed -E 's#^(https?://[^/]+/).*#\1#')"
           if [ -n "$THUMB" ]; then
             curl -fsSL --max-time 30 \
                  -A 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36' \
-                 -e 'https://www.youtube.com/' -o out/cover.img "$THUMB" \
-              || echo '(کاور دریافت نشد — بدون کاور ادامه می‌دهیم)'
+                 -e "$ORIGIN" -o out/cover.img "$THUMB" \
+              || rm -f out/cover.img
+          fi
+          if [ ! -s out/cover.img ]; then
+            # پشتیبان: خود yt-dlp کاور را بگیرد (برای سایت‌هایی که لینک بندانگشتی مستقیم نمی‌دهند)
+            yt-dlp --skip-download --write-thumbnail --convert-thumbnails jpg --no-warnings --no-playlist \
+              "${JSR[@]}" ${YTDLP_COOKIES:+$YTDLP_COOKIES} $EA -o '/tmp/cv.%(ext)s' -- "$URL" >/dev/null 2>&1 || true
+            if [ -s /tmp/cv.jpg ]; then mv /tmp/cv.jpg out/cover.img; else echo '(کاور دریافت نشد — بدون کاور ادامه می‌دهیم)'; fi
           fi
           find out -maxdepth 1 -type f -printf '%f\t%s\n' | sort \
             | jq -Rsc 'split("\n")[:-1] | map(split("\t")) | map({name:.[0], bytes:(.[1]|tonumber)})' > /tmp/files.json
@@ -309,7 +348,7 @@ jobs:
           TAG="dlx-$JID"
           NOTES="🔗 منبع: $URL
           📦 کیفیت: $QUALITY | فایل‌ها: $(jq '.files | length' out/meta.json) | حجم کل: $(du -sh out | cut -f1)
-          ⏳ تا ${KEEP_HOURS} ساعت آینده در دسترس؛ بعدش خودکار حذف می‌شود."
+          ⏳ تا ${KEEP_MINUTES} دقیقه آینده در دسترس؛ بعدش خودکار حذف می‌شود."
           gh release create "$TAG" out/* --repo "$REPO" --prerelease \
             --title "dlx-$JID — ${TITLE:0:70}" --notes "$NOTES" \
             || fail "ساخت رلیز ناموفق بود (شاید تگ $TAG از قبل وجود دارد — jid تازه بدهید)"
@@ -318,7 +357,7 @@ jobs:
           if [ "$EVT" = "issues" ] && [ -n "${I_NUM:-}" ]; then
             gh issue comment "$I_NUM" --repo "$REPO" --body "✅ آماده شد!
             فایل‌ها: https://github.com/$REPO/releases/tag/$TAG
-            (تا ${KEEP_HOURS} ساعت آینده در دسترس است.)" || true
+            (تا ${KEEP_MINUTES} دقیقه آینده در دسترس است.)" || true
             gh issue close "$I_NUM" --repo "$REPO" || true
           fi
           {
@@ -345,7 +384,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          CUTOFF="$(date -u -d "${KEEP_HOURS:-12} hours ago" +%Y-%m-%dT%H:%M:%SZ)"
+          CUTOFF="$(date -u -d "${KEEP_MINUTES:-60} minutes ago" +%Y-%m-%dT%H:%M:%SZ)"
           echo "سقف نگهداری رلیزها: $CUTOFF"
           TAGS="$(gh api --paginate "repos/$REPO/releases" \
             | jq -rs --arg c "$CUTOFF" '[.[][] | select(.tag_name | startswith("dlx-")) | select((.published_at // .created_at) < $c) | .tag_name]')"
